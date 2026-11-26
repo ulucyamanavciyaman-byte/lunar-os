@@ -1,0 +1,67 @@
+name: Build LUNAR
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: debian:trixie
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack the LUNAR project
+        run: |
+          base64 -d bundle.b64 | tar xz
+          ls lunar-os
+      - name: Install tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq python3 python3-pil fonts-dejavu-core xorriso zip e2fsprogs mtools ca-certificates >/dev/null
+      - name: Make the artwork and icons
+        run: cd lunar-os && python3 tools/make_art.py && python3 tools/make_icons.py
+      - name: Build the LUNAR system
+        run: cd lunar-os && bash build.sh
+      - name: Show build errors
+        if: failure()
+        run: |
+          tail -n 60 lunar-os/build.log || true
+          grep -E '^E: |Unable to locate|error' lunar-os/build.log | tail -n 20 | while read -r l; do echo "::error::$l"; done || true
+      - name: Make the USB files (copy onto a FAT32 USB = bootable)
+        run: |
+          mkdir usb
+          xorriso -osirrox on -indev lunar-os/LUNAR.iso -extract / usb >/dev/null 2>&1
+          chmod -R u+w usb
+          find usb -type l -delete
+          rm -rf usb/isolinux usb/\[BOOT\] 2>/dev/null || true
+          cp lunar-os/usb/* usb/
+          # make sure the EFI boot loader finds its menu when booted from a plain FAT32 copy
+          if [ ! -f usb/EFI/debian/grub.cfg ] && [ -f usb/boot/grub/efi.img ]; then
+            mkdir -p usb/EFI/debian
+            mcopy -n -i usb/boot/grub/efi.img ::/EFI/debian/grub.cfg usb/EFI/debian/grub.cfg 2>/dev/null || true
+          fi
+          if [ ! -f usb/EFI/debian/grub.cfg ]; then
+            mkdir -p usb/EFI/debian
+            printf 'search --set=root --file /.disk/info\nset prefix=($root)/boot/grub\nconfigfile $prefix/grub.cfg\n' > usb/EFI/debian/grub.cfg
+          fi
+          echo "--- EFI:"; find usb/EFI -type f; cat usb/EFI/debian/grub.cfg
+          # 1.6 GB save area (live-boot finds the file named "persistence" by itself)
+          truncate -s 1600M usb/persistence
+          mkfs.ext4 -q -F -L persistence usb/persistence
+          echo "/ union" > /tmp/persistence.conf
+          debugfs -w -R "write /tmp/persistence.conf persistence.conf" usb/persistence
+          du -sh usb; ls -la usb
+          cd usb && zip -q -r -6 ../LUNAR-USB.zip . && cd ..
+          ls -la LUNAR-USB.zip lunar-os/LUNAR.iso
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: lunar-${{ github.run_number }}
+          name: LUNAR build ${{ github.run_number }}
+          files: |
+            LUNAR-USB.zip
+            lunar-os/LUNAR.iso
