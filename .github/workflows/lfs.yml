@@ -1,0 +1,27 @@
+name: Publish for download
+on:
+  push:
+    paths: ['.github/workflows/lfs.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  lfs:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Get the built USB package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download lunar-1 -R ${{ github.repository }} -p LUNAR-USB.zip && ls -la
+      - name: Push it with Git LFS to the dist branch
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          mkdir dist && cd dist
+          git init -q -b dist
+          git lfs install --local
+          git lfs track '*.zip'
+          mv ../LUNAR-USB.zip .
+          git add .gitattributes LUNAR-USB.zip
+          git -c user.name=lunar-bot -c user.email=bot@lunar.local commit -qm 'LUNAR USB package'
+          git push -f "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git" dist
